@@ -9,7 +9,12 @@ export default Plugin.define({
   setup(ctx) {
     const unregisterRoute = ctx.ui.router.register({
       name: ROUTE,
-      render: (input) => <TreeView back={input.data?.back as Destination | undefined} />,
+      render: (input) => (
+        <TreeView
+          back={input.data?.back as Destination | undefined}
+          sessionID={input.data?.sessionID as string | undefined}
+        />
+      ),
     })
 
     // A slot render runs inside a component, which is where a keymap layer can
@@ -36,7 +41,15 @@ export default Plugin.define({
                     : from.type === "plugin" && from.name !== ROUTE
                       ? { type: "plugin", name: from.name }
                       : { type: "home" }
-                ctx.ui.router.navigate({ type: "plugin", name: ROUTE, data: { back } })
+
+                // Prefer the session being viewed; fall back to an open tab so
+                // `/tree` from home still lands on the session you are working in.
+                const sessionID =
+                  from.type === "session"
+                    ? from.sessionID
+                    : ctx.ui.tabs.list().find((tab) => tab.active)?.sessionID
+
+                ctx.ui.router.navigate({ type: "plugin", name: ROUTE, data: { back, sessionID } })
               },
             },
           ],
@@ -44,8 +57,6 @@ export default Plugin.define({
         return null
       },
     })
-
-    ctx.ui.toast.show({ message: "context tree loaded", variant: "success" })
 
     return () => {
       unregisterRoute()

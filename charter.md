@@ -4,154 +4,117 @@ Project context and build plan. Read this before doing anything in this repo.
 
 ## What we are building
 
-An **OpenCode 2.0 plugin** that turns parallel agent work on one feature branch
-into a single navigable tree. Each node fuses three things so they can be seen
-and driven together:
+A **read-only OpenCode 2.0 plugin that draws the context of the current session
+as a family tree**. A session is one lane of contiguous thought; forks branch
+that lane at the exact message where context diverged; subagent sessions fold
+into the turn of their parent that spawned them. The plugin renders the active
+lane as sequential, bordered boxes (one per turn, message, or step) with a
+family rail for navigating between branches.
 
-- **Context** — a forked session (contiguous line of thought).
-- **Code** — a git branch + worktree, stacked off its parent.
-- **Run** — that node's processes/services, with live status.
-
-The tree renders as a graph in the TUI. Selecting a node is "which session,
-worktree, and test server am I looking at".
-
-The repo is named `opencode-context-tree`, which is now accurate.
+It is a **viewer**. It does not create, fork, merge, or mutate anything.
 
 ## The problem
 
-- Running several agents in parallel clobbers things: the working tree, and
-  runtime resources (ports, save files, databases, test servers).
-- Git worktrees fix the working-tree clobbering; the user wants that automated
-  and legible.
-- The user wants to *see* what is running and what is finished, and to dive
-  through a tree of adjacent features while staying in one contiguous line of
-  thought from a single base branch.
+A long agent run is hard to see. The transcript is a wall of text; the
+interesting structure — which prompts produced which work, how much was tools
+versus reply, where a fork split off, what a subagent actually did — is buried.
+The user wants to *see* the shape of the context: box after box of turn
+summaries, with branches visible as branches rather than indentation.
+
+An earlier version of this plugin was an orchestrator (nodes = session + git
+branch + worktree + run state). That direction is **out of scope** and has been
+deleted. This repo is now only the context viewer.
 
 ## Decisions (locked — do not relitigate without the user)
 
-- **Node = fused**: a session plus its own branch/worktree.
-- **Topology = stacked**: a child branch is created off its parent branch, not
-  off a single flat base.
-- **Merge = bottom-up `--no-ff` merges into the feature branch**, parents
-  before children. Because branches are stacked, merging a parent first makes
-  the child's delta clean. Cherry-pick is the exception, not the default.
-- **Restack** a subtree with `git rebase --update-refs`.
-- **Cherry-pick is opt-in and always uses `-x`** (records provenance). Reserve
-  it for surgical backports.
-- **Tag every node tip** under `refs/tree/<node>` so the tree is permanently
-  auditable even if history later linearizes.
-- **Enable `git rerere`** so repeated conflicts resolve once.
-- **Worktree timing: create at node creation.** (This revises an earlier "lazy,
-  on first write" decision: a session's working directory is fixed at creation,
-  so promoting a node later means re-rooting or restarting its session, which
-  breaks context contiguity.)
-- **Config is project-agnostic and authored by the user.** It declares the
-  build/run/test commands so the tool works on any project. No external runtime
-  manager (eve or similar). The config is the source of truth for how to build,
-  run, and test — do not invent a parallel registry.
-- **Interaction is directional vim bindings only**: `h j k l` for movement,
-  plus `gg`/`G`, `Enter`, `Esc`. No modal editor, no text editing, no vim
-  emulation beyond movement.
-- **UI uses the harness's own primitives and theme.** Do not hand-draw chrome,
-  and do not build a separate external TUI app unless the harness genuinely
-  cannot render the surface.
-- **Runtime uses the harness's own process/tool execution.** Track per-node run
-  state (running / finished-ok / failed / stopped) and show it on the node. Do
-  not build a bespoke process supervisor if the harness provides one.
+- **A lane is a session.** One contiguous line of context.
+- **Forks are branches, subagents are attachments.** A session is a *fork* when
+  `Session.Info.fork` is set (it carries the parent's boundary message); it is a
+  *subagent* when it has `parentID` but no `fork`. Subagents belong to the turn
+  of their parent that spawned them, not to a sibling lane.
+- **Branches attach at a real point, not a depth.** Fork junctions are placed at
+  the boundary message (`fork.boundary.messageID`, `before`/`through`) in the
+  parent's card list.
+- **One lane on screen at a time, with a family rail.** The header shows the
+  ancestry chain (root → … → active) and the active lane's child branches.
+  `h`/`l` move between lanes; fork junctions inside a lane are jumpable.
+- **Three view modes**, cycled with `m`: `turn` (user prompt + following work),
+  `message` (one raw message per box), `step` (assistant content split into
+  text / reasoning / grouped tool batches).
+- **Summaries are heuristic. No LLM.** Titles and previews come from message
+  text and metadata (tool counts, files, duration, tokens, cost); `Enter`
+  expands to the raw content.
+- **Boxes, not indentation.** Bordered cards in a vertical column with a rail
+  gutter and connector junctions. This is a tree diagram, not a nested list.
+- **Reactive data, not one-shot fetch.** Read `ctx.data.session.*` so the view
+  updates live while a session runs.
+- **Read-only.** No prompt injection, no git, no process management.
+- **UI uses the harness's own primitives and theme.** No hand-drawn chrome.
 
 ## Non-goals
 
-- Not a vim editor; not modal text editing.
-- Not a port manager or process supervisor built from scratch.
-- Not a general stacked-PR review tool.
+- Worktrees, stacked branches, merges, cherry-picks, node tags, run/shell state.
+- Creating or forking sessions, or editing anything.
+- LLM-generated summaries.
+- A general session manager or a stacked-PR tool.
 - Do not reimplement anything the harness already provides — check first.
-
-## Hard constraints
-
-- Git operations must be **abortable** and must **never auto-push**.
-- Automated merges are a data-loss surface: keep node tags, log every git
-  operation, keep each step reversible.
-- Parallel nodes must not share mutable runtime resources (ports, save files,
-  databases). Git isolation alone does not solve this; it is the real
-  clobbering problem.
-- The user keeps all history: never squash or discard commits unless explicitly
-  asked.
 
 ## Harness mapping (OpenCode 2.0)
 
 Target the V2 line: `@opencode/cli` 2.x and plugin SDK `@opencode/plugin` 2.x.
 On this machine the V2 CLI is the Homebrew install (`/opt/homebrew/bin/opencode`,
-currently 2.0.12). The `~/.opencode/bin/opencode` binary is stale V1 — do not
-use it. Plugins are discovered from `.opencode/plugins/<id>/`, which must have a
-server entrypoint `index.ts` and may have a TUI entrypoint `tui.tsx`.
+v2.0.12). The bare `opencode` on `PATH` resolves to `~/.opencode/bin/opencode`,
+which is **stale V1 — do not use it**; always call the absolute V2 path. Plugins
+are discovered from `.opencode/plugins/<id>/`, which must have a server
+entrypoint `index.ts` and may have a TUI entrypoint `tui.tsx`.
 
-- **Session (context)** → `session.list|get`, `Session.Info.parentID`, and
-  `POST /session/{id}/fork` (`fork.sessionID` + boundary). Subagent sessions are
-  ordinary children via `parentID`.
-- **Worktree/branch (code)** → `worktree.list|create|remove|refresh` (Git
-  strategy), `project.sandboxes`, and `vcs.get()`'s `branch.current` for the
-  branch at a directory. A session's worktree is its
-  `location.directory`.
-- **Run state** → `shell.list` (running shells only), `session.active`, and the
-  TUI cache `data.session.status(id)` (`"idle" | "running"`).
-- **UI** → TUI plugin surfaces: `ui.router` routes, `ui.slot`, `session.panel`,
-  `keymap.layer`, dialogs, toasts, and `theme` tokens. Use these; no hand-drawn
-  chrome.
-- **Node tags** → `refs/tree/<node>` are ours; the harness has no equivalent.
+- **Sessions / lanes** → `data.session.list()`, `data.session.get(id)`,
+  `data.session.root(id)` (walk to the family root), `data.session.family(id)`
+  (all sessions sharing a root). `Session.Info.parentID` + `Session.Info.fork`
+  (`{ sessionID, boundary: { type: "before"|"through", messageID } }`)
+  distinguish forks from subagents.
+- **Turns / messages** → `data.session.message.list(id)` (reactive),
+  `.get(id, messageID)`, `.sync(id)`. `SessionMessageInfo` is a tagged union:
+  `user`, `assistant` (with `content[]` of text / reasoning / tool, plus
+  `agent`, `model`, `tokens`, `cost`, `snapshot.files`, `finish`, `error`),
+  `shell`, `compaction`, `system`, `synthetic`, `skill`, `idle`, and the
+  `agent-switched` / `model-switched` / `location-switched` markers.
+- **Run state** → `data.session.status(id)` returns `"idle" | "running"`.
+- **Live updates** → `data.on(type, handler)`; the `data.session.*` reads are
+  already reactive inside a Solid computation.
+- **UI** → `ui.router.register` / `navigate` (a route page opened by `/tree`),
+  `ui.slot`, `keymap.layer`, `ui.toast`, and `theme` tokens. Use these; no
+  hand-drawn chrome.
 
-Data reality to keep in mind: many sessions can share one worktree; a session's
-worktree directory is fixed at creation; `worktree.list` is saved inventory and
-can be stale (union it with session directories and `project.sandboxes`); and
-`shell.list` drops exited commands, so finished/failed states are not directly
-observable yet.
+## Shape
 
-## First milestone (smallest useful thing)
-
-Prove the plugin loads and renders a graph-shaped surface over real state:
-
-1. Read the session tree and the current worktrees.
-2. Render them as a navigable tree with the directional keys.
-3. Show per-node run state.
-
-Read-only. No create, no merge, no worktree mutation yet.
-
-Agreed shape for this milestone:
-
-- **Node = worktree/branch** (the stacked unit). Sessions hang off the node that
-  owns their directory; subagent sessions nest under their parent session.
-- **Scope = current project only** (`ctx.location`).
-- **Surface = a route page**, opened by the `/tree` command.
-- The **root node** is the project's canonical checkout; other nodes are its
-  worktrees/sandboxes and any directory a session runs in.
-
-## Then
-
-- Create a child node: fork the session, create a stacked branch/worktree off
-  the parent, run the config's setup/build command.
-- Start/stop the node's services; choose which node's test server you are on.
-- Merge back: bottom-up merges, subtree restack, opt-in cherry-pick, node tags,
-  conflict state shown on nodes.
-- Persist the node map (session ↔ branch ↔ worktree ↔ run state).
+- `index.ts` — server entrypoint, intentionally a no-op (read-only plugin).
+- `tui.tsx` — registers the `context-tree` route and the global `/tree` command;
+  passes `back` and `sessionID` as route data.
+- `model.ts` — reads the family, groups messages into cards for each view mode,
+  attaches branches at boundaries and subagents at their spawning turn.
+- `tree.tsx` — the route view: family header, windowed box column, keymap.
 
 ## Status
 
-Milestone 1 is implemented and loads in a fresh OpenCode 2.0 process. The plugin
-lives at `.opencode/plugins/context-tree/` (`index.ts` server entry, `tui.tsx`
-route, `model.ts` read-only assembly, `tree.tsx` view + navigation). It is a
-concatenation-free, read-only tree of the current project's worktrees and
-sessions with run state and directional navigation.
+Rewritten to the family-tree viewer. `model.ts` and `tree.tsx` replace the old
+worktree/session tree. Verified: `npm run typecheck` is clean, the model was
+exercised against a fixture (fork branch placed at its boundary message,
+subagent attached to its turn, all three modes grouping correctly), and the TUI
+entrypoint loads in a real V2 process with no errors or warnings.
 
-Known operational caveat: the long-running shared background service may hold a
+Known operational caveat: a long-running shared background service may hold a
 stale module-resolution cache if it started before this repo's `node_modules`
 existed; `opencode service restart` clears it. The plugin resolves normally in a
-fresh process (`--standalone`).
+fresh process.
 
 ## Open questions
 
-- Where node metadata lives: harness storage vs an in-repo file. Candidates:
-  OpenCode session `metadata`, the plugin's `ctx.storage`, or a committed file.
-- How run state is discovered. The shell API only exposes *running* commands, so
-  finished-ok / failed / stopped needs a server plugin capturing shell events
-  into `ctx.storage` (or a status command declared in the config).
-- How to derive branch stacking (parent branch per node) before we record it —
-  git reflog/merge-base heuristics, or our own persisted graph.
+- Matching a subagent to its spawning tool call: we currently attach by
+  `time.created` against the parent's timeline. If the spawning tool call's
+  `state.metadata` carries the child session id, prefer that.
+- Whether to add a session family picker, so `/tree` can open a family other than
+  the current one.
+- Richer per-card rendering (diffs, syntax-highlighted tool output, inline
+  markdown) versus the current pre-truncated plain lines.
+- Persisting expansion/lane/mode selection across reloads via `ctx.storage`.
